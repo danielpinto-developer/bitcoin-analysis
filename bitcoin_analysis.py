@@ -1,78 +1,72 @@
-import requests
+import yfinance as yf
+import pandas as pd
 import matplotlib.pyplot as plt
-from datetime import datetime
-import statistics
+import os
 
-# === Step 1: Fetch 1-Year Bitcoin Price Data (Daily) ===
-url = "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart"
-params = {
-    "vs_currency": "usd",
-    "days": "365",  # Last 12 months
-    "interval": "daily"
-}
+# Output directory for charts
+output_dir = "charts_bitcoin"
+os.makedirs(output_dir, exist_ok=True)
 
-response = requests.get(url, params=params)
-data = response.json()
+# Download BTC data
+btc = yf.download('BTC-USD', period='1y', auto_adjust=True)
+btc = btc[['Close']].copy()
+btc.reset_index(inplace=True)
 
-# Check if 'prices' is in the response
-if 'prices' not in data:
-    raise KeyError("API response missing 'prices' field")
+# Add Moving Average and drop NA rows
+btc['MA50'] = btc['Close'].rolling(window=50).mean()
+btc.dropna(inplace=True)
+btc.reset_index(drop=True, inplace=True)
 
-# === Step 2: Extract and Format Data ===
-timestamps = [datetime.fromtimestamp(price[0] / 1000) for price in data["prices"]]
-prices = [price[1] for price in data["prices"]]
+# Ensure shape compatibility using .to_numpy().ravel()
+close_series = pd.Series(btc['Close'].to_numpy().ravel(), index=btc.index)
+ma_series = pd.Series(btc['MA50'].to_numpy().ravel(), index=btc.index)
 
-# === Step 3: Insight 1 — Full 12-Month Price Trend ===
-plt.figure(figsize=(10, 4))
-plt.plot(timestamps, prices, color='navy', linewidth=2)
-plt.title("Bitcoin Price - Last 12 Months")
-plt.xlabel("Date")
-plt.ylabel("Price (USD)")
-plt.grid(True)
-plt.tight_layout()
-plt.savefig("insight_1_full_trend.png")
-plt.clf()
+# Dip logic
+btc['Below_MA'] = close_series < ma_series
+btc['Price_Change'] = close_series.pct_change().fillna(0) * 100
+btc['Recent_Dip'] = btc['Below_MA'] & (btc['Price_Change'] < -1)
 
-# === Step 4: Insight 2 — Last 60 Days (Recent Trend) ===
-plt.plot(timestamps[-60:], prices[-60:], color='darkred', linewidth=2)
-plt.title("Bitcoin Price - Last 60 Days")
-plt.xlabel("Date")
-plt.ylabel("Price (USD)")
-plt.grid(True)
-plt.tight_layout()
-plt.savefig("insight_2_recent_trend.png")
-plt.clf()
-
-# === Step 5: Insight 3 — Monthly Average Prices (Bar Chart) ===
-from collections import defaultdict
-monthly_prices = defaultdict(list)
-
-for date, price in zip(timestamps, prices):
-    key = date.strftime("%Y-%m")
-    monthly_prices[key].append(price)
-
-months = list(monthly_prices.keys())
-monthly_avg = [sum(vals) / len(vals) for vals in monthly_prices.values()]
-
-plt.bar(months, monthly_avg, color='seagreen')
-plt.xticks(rotation=45, ha='right')
-plt.title("Monthly Avg BTC Price (Last 12 Months)")
-plt.ylabel("Avg Price (USD)")
-plt.tight_layout()
-plt.savefig("insight_3_monthly_avg.png")
-plt.clf()
-
-# === Step 6: Insight 4 — Highlight Dips Below 12-Month Average ===
-average_price = statistics.mean(prices)
-dip_dates = [t for t, p in zip(timestamps, prices) if p < average_price]
-dip_prices = [p for p in prices if p < average_price]
-
-plt.scatter(dip_dates, dip_prices, color='purple', label="Below Avg")
-plt.axhline(average_price, color='gray', linestyle='--', label=f"12-Month Avg: ${average_price:.2f}")
-plt.title("Dips Below Average Price")
-plt.xlabel("Date")
-plt.ylabel("Price (USD)")
+# Chart 1: Price + MA + Dips
+plt.figure(figsize=(12, 6))
+plt.plot(btc['Date'], btc['Close'], label='Bitcoin Price', linewidth=2)
+plt.plot(btc['Date'], btc['MA50'], label='50-Day MA', linestyle='--')
+plt.scatter(btc.loc[btc['Recent_Dip'], 'Date'],
+            btc.loc[btc['Recent_Dip'], 'Close'],
+            color='red', label='Dip Detected', zorder=5)
+plt.title('Bitcoin Price + 50-Day MA + Dip Zones')
+plt.xlabel('Date')
+plt.ylabel('USD')
 plt.legend()
 plt.grid(True)
 plt.tight_layout()
-plt.savefig("insight_4_price_dips.png")
+plt.savefig(f"{output_dir}/bitcoin_price_ma_dips.png", dpi=300)
+plt.close()
+
+# Chart 2: Daily % Price Change
+plt.figure(figsize=(12, 4))
+plt.plot(btc['Date'], btc['Price_Change'], color='purple', label='Daily % Change')
+plt.axhline(-1, color='red', linestyle='--', label='Dip Threshold')
+plt.title('Bitcoin Daily % Price Change')
+plt.xlabel('Date')
+plt.ylabel('% Change')
+plt.legend()
+plt.grid(True)
+plt.tight_layout()
+plt.savefig(f"{output_dir}/bitcoin_daily_change.png", dpi=300)
+plt.close()
+
+# Chart 3: Histogram
+plt.figure(figsize=(8, 4))
+btc['Price_Change'].hist(bins=50, color='skyblue', edgecolor='black')
+plt.axvline(-1, color='red', linestyle='--', label='Dip Threshold')
+plt.title('Distribution of Daily % Change')
+plt.xlabel('% Change')
+plt.ylabel('Frequency')
+plt.legend()
+plt.tight_layout()
+plt.savefig(f"{output_dir}/bitcoin_change_histogram.png", dpi=300)
+plt.close()
+
+print("\n✅ Bitcoin analysis complete.")
+print(f"📉 Dip days detected: {btc['Recent_Dip'].sum()}")
+print(f"📁 Charts saved to: {os.path.abspath(output_dir)}")
